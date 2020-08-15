@@ -92,6 +92,85 @@ const downloadProfileImage = (uid) => {
 };
 
 /**
+ * -----------------
+ * お気に入り関連の関数
+ * -----------------
+ */
+
+// favoriteの表示用のdiv（jQueryオブジェクト）を作って返す
+const createFavoriteMessageDiv = (messageId, message) => {
+  // HTML内のテンプレートからコピーを作成
+  const divTag = $(".favorite-template .list-group-item").clone();
+
+  const user = dbdata.users[message.uid];
+  if (user) {
+    // ユーザが存在する場合
+    // 投稿者ニックネーム
+    divTag
+      .find(".favorite__user-name")
+      .addClass(`nickname-${message.uid}`)
+      .text(user.nickname);
+    // 投稿者プロフィール画像
+    divTag
+      .find(".favorite__user-image")
+      .addClass(`profile-image-${message.uid}`);
+
+    if (user.profileImageURL) {
+      // プロフィール画像のURLを取得済みの場合
+      divTag.find(".favorite__user-image").attr({
+        src: user.profileImageURL,
+      });
+    }
+  }
+  // メッセージ本文
+  divTag.find(".favorite__text").text(message.text);
+  // 投稿日
+  divTag.find(".favorite__time").html(formatDate(new Date(message.time)));
+
+  // id属性をセット
+  divTag.attr("id", `favorite-message-id-${messageId}`);
+
+  return divTag;
+};
+
+// favoriteを表示する
+const addFavoriteMessage = (messageId, message) => {
+  const divTag = createFavoriteMessageDiv(messageId, message);
+  divTag.appendTo("#favorite-list");
+};
+
+// Realtime Database の favorites に追加する or favorites から削除する
+const toggleFavorite = (e) => {
+  const { messageId, message } = e.data;
+
+  e.preventDefault();
+
+  // favorites にデータが存在しているか
+  if (dbdata.favorites && dbdata.favorites[messageId]) {
+    // console.log(dbdata.favorites[messageId]);
+    // TODO: favorites から該当のお気に入り情報を削除
+    firebase.database().ref(`favorites/${currentUID}/${messageId}`).remove();
+  } else {
+    // TODO: favorites に該当のメッセージをお気に入りとして追加
+    const favorites = {
+      uid: currentUID,
+      text: message.text,
+      time: firebase.database.ServerValue.TIMESTAMP,
+    };
+
+    firebase.database().ref(`favorites/${currentUID}/${messageId}`).set({
+      message,
+      createdAt: firebase.database.ServerValue.TIMESTAMP,
+    });
+  }
+};
+
+// お気に入り一覧のモーダルを初期化
+const resetFavoritesListModal = () => {
+  $("#favorite-list").empty();
+};
+
+/**
  * -------------------
  * チャット画面関連の関数
  * -------------------
@@ -136,6 +215,22 @@ const createMessageDiv = (messageId, message) => {
 
   // id属性をセット
   divTag.attr("id", `message-id-${messageId}`);
+
+  // お気に入りボタンのイベントハンドラを登録
+  const mfl = divTag.find(".message__favorite-link");
+  mfl.on(
+    "click",
+    {
+      messageId,
+      message,
+    },
+    toggleFavorite
+  );
+
+  // TODO: お気に入りONのとき、お気に入りリンクのアイコンを 塗りつぶしあり(fa-star) に設定する
+  if (dbdata.favorites && dbdata.favorites[messageId]) {
+    mfl.html('<i class="message__favorite-icon fa fa-star"></i>');
+  }
 
   return divTag;
 };
@@ -302,9 +397,10 @@ const deleteRoom = (roomName) => {
     throw new Error(`${defaultRoomName}ルームは削除できません`);
   }
 
-  // TODO: ルームを削除
+  firebase.database().ref(`rooms/${roomName}`).remove();
 
-  // TODO: ルーム内のメッセージも削除
+  // ルーム内のメッセージも削除
+  firebase.database().ref(`messages/${roomName}`).remove();
 };
 
 // チャット画面の初期化処理
@@ -387,6 +483,68 @@ const loadChatView = () => {
 
     showCurrentRoom();
   });
+
+  // お気に入りデータを取得
+  const favoritesRef = firebase
+    .database()
+    .ref(`favorites/${currentUID}`)
+    .orderByChild("createdAt");
+
+  // 過去に登録したイベントハンドラを削除
+  favoritesRef.off("child_removed");
+  favoritesRef.off("child_added");
+
+  /**
+   * favorites の child_removedイベントハンドラを登録
+   * （お気に入りが削除されたときの処理）
+   */
+  favoritesRef.on("child_removed", (favSnapshot) => {
+    const messageId = favSnapshot.key;
+
+    // お気に入りが削除されていたら何もしない
+    if (!dbdata.favorites) {
+      return;
+    }
+
+    // TODO: 該当するデータをdbdata.favoritesから削除する
+    delete dbdata.favorites[messageId];
+
+    // お気に入り一覧モーダルから該当のお気に入り情報を削除する
+    $(`#favorite-message-id-${messageId}`).remove();
+
+    // TODO: お気に入りリンクのアイコンを、塗りつぶしなし(fa-star-o) に変更する
+    $(`#message-id-${messageId}`)
+      .find("i")
+      .removeClass("fa-star")
+      .addClass("fa-star-o");
+  });
+
+  /**
+   * favorites の child_addedイベントハンドラを登録
+   *（お気に入りが追加されたときの処理）
+   */
+  favoritesRef.on("child_added", (favSnapshot) => {
+    const messageId = favSnapshot.key;
+    const favorite = favSnapshot.val();
+
+    if (!dbdata.favorites) {
+      // データを初期化する
+      dbdata.favorites = {};
+    }
+
+    // TODO: dbdata.favoritesに登録する
+    dbdata.favorites[messageId] = favorite;
+    // console.log(dbdata.favorites[messageId]);
+
+    // お気に入り一覧モーダルを更新する
+    addFavoriteMessage(messageId, favorite.message);
+
+    // TODO: お気に入りリンクのアイコンを、塗りつぶしあり(fa-star) に変更する
+    $(`#message-id-${messageId}`)
+      .find("i")
+      .removeClass("fa-star-o")
+      .addClass("fa-star");
+  });
 };
 
 /**
@@ -435,6 +593,7 @@ const onLogout = () => {
   resetLoginForm();
   resetChatView();
   resetSettingsModal();
+  resetFavoritesListModal(); // お気に入り一覧のモーダルを初期化
   showView("login");
 };
 
@@ -544,17 +703,22 @@ $("#login-form").on("submit", (e) => {
   const email = $("#login-email").val();
   const password = $("#login-password").val();
 
-  // TODO: ログインを試みて該当ユーザが存在しない場合は新規作成する
+  /**
+   * ログインを試みて該当ユーザが存在しない場合は新規作成する
+   * まずはログインを試みる
+   */
   firebase
     .auth()
     .signInWithEmailAndPassword(email, password)
     .catch((error) => {
       console.log("ログイン失敗:", error);
       if (error.code === "auth/user-not-found") {
+        // 該当ユーザが存在しない場合は新規作成する
         firebase
           .auth()
           .createUserWithEmailAndPassword(email, password)
           .then(() => {
+            // 作成成功
             console.log("ユーザを作成しました");
           })
           .catch(catchErrorOnCreateUser);
@@ -600,7 +764,13 @@ $("#comment-form").on("submit", (e) => {
   }
   commentForm.val("");
 
-  // TODO: メッセージを投稿する
+  // メッセージを投稿する
+  const message = {
+    uid: currentUID,
+    text: comment,
+    time: firebase.database.ServerValue.TIMESTAMP,
+  };
+  firebase.database().ref(`messages/${currentRoomName}`).push(message);
 });
 
 // #message-listの高さを調整
@@ -655,19 +825,35 @@ $("#create-room-form").on("submit", (e) => {
   if (dbdata.rooms[roomName]) {
     $("#create-room__help").text("同じ名前のルームがすでに存在します").fadeIn();
     $("#create-room__room-name").addClass("has-error");
+    return;
   }
 
-  // TODO (A): ルーム作成処理
-
   /**
-   * TODO (B): ルーム作成に成功した場合は下記2つの処理を実行する
-   *
-   * モーダルを非表示にする
-   * $("#createRoomModal").modal("toggle");
-   *
-   * 作成したルームを表示
-   * changeLocationHash(roomName);
+   * ルーム作成処理
+   * priorityを2にすることで初期ルーム（priority=1）より順番的に後になる
    */
+  firebase
+    .database()
+    .ref(`rooms/${roomName}`)
+    .setWithPriority(
+      {
+        createdAt: firebase.database.ServerValue.TIMESTAMP,
+        createdByUID: currentUID,
+      },
+      2
+    )
+    .then(() => {
+      // ルーム作成に成功した場合は、下記2つの処理を実行する
+
+      // モーダルを非表示にする
+      $("#createRoomModal").modal("toggle");
+
+      // 作成したルームを表示
+      changeLocationHash(roomName);
+    })
+    .catch((error) => {
+      console.error("ルーム作成に失敗:", error);
+    });
 });
 
 /**
